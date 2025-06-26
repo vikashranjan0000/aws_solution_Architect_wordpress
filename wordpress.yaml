@@ -1,0 +1,118 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: AWS CloudFormation Template to deploy a WordPress site with RDS and EC2
+
+Parameters:
+  KeyName:
+    Description: Name of an existing EC2 KeyPair to enable SSH access to the instances
+    Type: AWS::EC2::KeyPair::KeyName
+  DBName:
+    Description: The WordPress database name
+    Type: String
+    Default: wordpressdb
+  DBUser:
+    Description: The WordPress database admin user
+    Type: String
+    Default: wpadmin
+    MinLength: 1
+    MaxLength: 16
+    AllowedPattern: '[a-zA-Z][a-zA-Z0-9]*'
+    ConstraintDescription: must begin with a letter and contain only alphanumeric characters.
+  DBPassword:
+    Description: The WordPress database admin password
+    Type: String
+    NoEcho: true
+    MinLength: 8
+    MaxLength: 41
+    ConstraintDescription: must be between 8 and 41 characters.
+  DBRootPassword:
+    Description: Root password for MySQL
+    Type: String
+    NoEcho: true
+    MinLength: 8
+    MaxLength: 41
+    ConstraintDescription: must be between 8 and 41 characters.
+
+Resources:
+
+  WordPressSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Enable HTTP and SSH access
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+
+  RDSSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Enable MySQL access from EC2
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 3306
+          ToPort: 3306
+          SourceSecurityGroupId: !Ref WordPressSecurityGroup
+
+  DBSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: Subnet group for RDS instance
+      SubnetIds:
+        - subnet-12345678  # CHANGE THIS
+        - subnet-87654321  # CHANGE THIS
+
+  MyDB:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      DBName: !Ref DBName
+      AllocatedStorage: 20
+      DBInstanceClass: db.t3.micro
+      Engine: MySQL
+      MasterUsername: !Ref DBUser
+      MasterUserPassword: !Ref DBPassword
+      VPCSecurityGroups:
+        - !Ref RDSSecurityGroup
+      DBSubnetGroupName: !Ref DBSubnetGroup
+      PubliclyAccessible: true
+      MultiAZ: false
+
+  WebServerInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: t3.micro
+      SecurityGroupIds:
+        - !Ref WordPressSecurityGroup
+      KeyName: !Ref KeyName
+      ImageId: ami-0c55b159cbfafe1f0 # Amazon Linux 2 AMI (update as needed)
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash -xe
+          yum update -y
+          amazon-linux-extras install -y php8.2
+          yum install -y httpd mysql
+          systemctl enable httpd
+          systemctl start httpd
+          cd /var/www/html
+          wget https://wordpress.org/latest.tar.gz
+          tar -xzf latest.tar.gz
+          cp -r wordpress/* .
+          rm -rf wordpress latest.tar.gz
+          cp wp-config-sample.php wp-config.php
+          sed -i "s/database_name_here/${DBName}/" wp-config.php
+          sed -i "s/username_here/${DBUser}/" wp-config.php
+          sed -i "s/password_here/${DBPassword}/" wp-config.php
+          sed -i "s/localhost/${MyDB.Endpoint.Address}/" wp-config.php
+          chown -R apache:apache /var/www/html
+
+Outputs:
+  WebsiteURL:
+    Description: WordPress Website URL
+    Value: !Sub "http://${WebServerInstance.PublicDnsName}/"
+  DBEndpoint:
+    Description: RDS Endpoint
+    Value: !GetAtt MyDB.Endpoint.Address
